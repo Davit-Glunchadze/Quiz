@@ -7,17 +7,19 @@ export default function WrittenListView({
   hiddenItems,
   answers,
   setAnswer,
+  disabled = false,
 }: {
   q: WrittenList;
   shownItems: ListItem[];
   hiddenItems: ListItem[];
   answers: string[];
   setAnswer: (i: number, v: string) => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="space-y-4">
+    <div className={`space-y-4 ${disabled ? "opacity-70" : ""}`}>
       <div className="text-lg font-medium">{q.text}</div>
-      <div className="flex flex-wrap gap-2 items-center">
+      <div className={`flex flex-wrap gap-2 items-center ${disabled ? "pointer-events-none" : ""}`}>
         {shownItems.map((it, idx) => (
           <Pill key={`shown-${idx}`}>{it.value}</Pill>
         ))}
@@ -45,6 +47,7 @@ export default function WrittenListView({
                 setAnswer(idx, raw);
               }
             }}
+            disabled={disabled}
           />
         ))}
       </div>
