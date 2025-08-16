@@ -1,50 +1,65 @@
+import React from "react";
 import type { MCQ, MCQOption } from "../core/types";
+import QuestionCard from "./QuestionCard";
 
-export default function MCQView({
+type Props = {
+  q: MCQ;
+  selected?: string;
+  preparedOptions?: MCQOption[];
+  onAnswer: (optionId: string) => void;
+  disabled?: boolean;
+};
+
+const MCQView: React.FC<Props> = ({
   q,
   selected,
   preparedOptions,
   onAnswer,
   disabled = false,
-}: {
-  q: MCQ;
-  selected?: string;
-  preparedOptions?: MCQOption[]; // seed-prepared order
-  onAnswer: (optionId: string) => void;
-  disabled?: boolean;
-}) {
-  const displayOptions = preparedOptions ?? q.options;
+}) => {
+  const options =
+    preparedOptions && preparedOptions.length ? preparedOptions : q.options;
 
   return (
-    <div className="space-y-3 opacity-100">
-      <div className="text-lg font-medium">{q.text}</div>
-      <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${disabled ? "pointer-events-none opacity-70" : ""}`}>
-        {displayOptions.map((opt) => {
+    <QuestionCard question={q}>
+      <div
+        className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${
+          disabled ? "opacity-70 pointer-events-none" : ""
+        }`}
+      >
+        {options.map((opt) => {
           const isSelected = selected === opt.id;
+          const base =
+            "w-full text-left px-3 py-2 border rounded-xl transition cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400";
+          const cls = isSelected
+            ? "bg-blue-200 border-blue-400"
+            : "bg-white border-gray-300 hover:bg-gray-100";
+
           return (
             <button
               key={opt.id}
-              className={`border rounded-xl p-3 text-left flex items-center gap-3 transition-colors cursor-pointer ${isSelected ? 'bg-blue-50 border-blue-500 ring-1 ring-blue-300' : 'hover:bg-neutral-50'}`}
+              className={`${base} ${cls}`}
               onClick={() => onAnswer(opt.id)}
-              aria-pressed={isSelected}
               disabled={disabled}
             >
               {opt.image ? (
-                <img src={opt.image} alt={opt.alt ?? "option"} className="w-28 h-20 object-contain bg-white rounded-md border" />
+                <div className="flex items-center gap-2">
+                  <img
+                    src={opt.image}
+                    alt={opt.alt ?? "option"}
+                    className="h-20 object-contain"
+                  />
+                  {opt.text && <span className="font-medium">{opt.text}</span>}
+                </div>
               ) : (
-                <span className="text-base font-semibold">{opt.text}</span>
+                <span className="font-medium">{opt.text}</span>
               )}
             </button>
           );
         })}
       </div>
-      {q.images?.question?.length ? (
-        <div className="flex flex-wrap gap-2 pt-1">
-          {q.images.question.map((src, i) => (
-            <img key={i} src={src} alt={`q-${q.id}-fig-${i}`} className="h-20 object-contain" />
-          ))}
-        </div>
-      ) : null}
-    </div>
+    </QuestionCard>
   );
-}
+};
+
+export default MCQView;
