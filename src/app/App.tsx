@@ -9,81 +9,169 @@ import CountdownTimer from "../components/CountdownTimer";
 
 import { TEST_CONFIG } from "../core/config";
 import { scoreWrittenList, scoreWrittenSingle } from "../core/scoring";
-import { buildBags, refillIfNeeded, saveBag, takeFromBag, partitionList } from "../core/selection";
+import {
+  buildBags,
+  refillIfNeeded,
+  saveBag,
+  takeFromBag,
+} from "../core/selection";
 import { useQuestionBank } from "../core/bank";
-import type { MCQ, MCQOption, Question, TestItem, WrittenList, WrittenSingle } from "../core/types";
-import {makeRNG, shuffleRng, type RNG } from "../core/utils";
-
+import type {
+  MCQ,
+  MCQOption,
+  Question,
+  TestItem,
+  WrittenList,
+  WrittenSingle,
+} from "../core/types";
+import { makeRNG, shuffleRng } from "../core/utils";
+import type { RNG } from "../core/utils";
 
 /** Arrange MCQ options with a fixed slot for the correct answer using seeded RNG. */
 function prepareMCQOptions(q: MCQ, rng: RNG, desiredSlot: number): MCQOption[] {
   const opts = q.options.slice();
   const slot = Math.min(Math.max(desiredSlot || 1, 1), opts.length);
-  const correctIndex = opts.findIndex(o => o.id === q.correct);
+  const correctIndex = opts.findIndex((o) => o.id === q.correct);
   const correct = opts[correctIndex];
-  const others = opts.filter(o => o.id !== q.correct);
+  const others = opts.filter((o) => o.id !== q.correct);
   const shuffledOthers = shuffleRng(others, rng);
-  const arranged: MCQOption[] = Array.from({ length: opts.length }, () => ({ id: "__placeholder__" } as MCQOption));
+  const arranged: MCQOption[] = Array.from(
+    { length: opts.length },
+    () => ({ id: "__placeholder__" } as MCQOption)
+  );
   arranged[slot - 1] = correct;
   let k = 0;
-  for (let i = 0; i < arranged.length; i++) if (arranged[i].id === "__placeholder__") arranged[i] = shuffledOthers[k++];
+  for (let i = 0; i < arranged.length; i++)
+    if (arranged[i].id === "__placeholder__") arranged[i] = shuffledOthers[k++];
   return arranged;
 }
 
 type StartOptions =
-  | { mode: "normal"; bank: Question[]; rng: RNG }
-  | { mode: "practiceWrong"; bank: Question[]; lastItems: TestItem[]; rng: RNG };
+  | { mode: "normal"; bank: Question[]; rng: RNG; revealMode: number }
+  | {
+      mode: "practiceWrong";
+      bank: Question[];
+      lastItems: TestItem[];
+      rng: RNG;
+      revealMode: number;
+    };
+
+/** Apply revealMode overrides for Written-List questions. */
+function applyRevealMode(
+  wl: WrittenList,
+  rng: RNG,
+  revealMode: number
+): { shown: { value: string }[]; hidden: { value: string }[] } {
+  const all = wl.list.full.slice();
+  const n = all.length;
+
+  // Helper for picking k random unique indices
+  const pickK = (k: number) => {
+    const idxs = Array.from({ length: n }, (_, i) => i);
+    const shuffled = shuffleRng(idxs, rng);
+    return new Set(shuffled.slice(0, Math.max(0, Math.min(n, k))));
+  };
+
+  if (revealMode === 0) {
+    // Show none
+    return { shown: [], hidden: all };
+  }
+
+  if (revealMode === 1) {
+    // Show exactly one random element
+    const one = pickK(1);
+    const shown = all.filter((_, i) => one.has(i));
+    const hidden = all.filter((_, i) => !one.has(i));
+    return { shown, hidden };
+  }
+
+  // Default 0.25
+  const k = Math.max(1, Math.round(n * 0.25));
+  const chosen = pickK(k);
+  const shown = all.filter((_, i) => chosen.has(i));
+  const hidden = all.filter((_, i) => !chosen.has(i));
+  return { shown, hidden };
+}
 
 function startTest(opts: StartOptions): TestItem[] {
-  const { bank, rng } = opts;
+  const { bank, rng, revealMode } = opts;
   const { mcq: mcqBag0, written: wrBag0 } = buildBags(bank);
-  const mcqIdsAll = bank.filter(q => q.type === "mcq").map(q => q.id);
-  const wrIdsAll = bank.filter(q => q.type === "written").map(q => q.id);
+  const mcqIdsAll = bank.filter((q) => q.type === "mcq").map((q) => q.id);
+  const wrIdsAll = bank.filter((q) => q.type === "written").map((q) => q.id);
 
   let mcqIds: number[] = [];
   let wrIds: number[] = [];
 
   if (opts.mode === "practiceWrong") {
     const wrongMCQ = opts.lastItems
-      .filter(it => it.q.type === "mcq" && it.mcqSelected !== (it.q as MCQ).correct)
-      .map(it => it.q.id);
+      .filter(
+        (it) => it.q.type === "mcq" && it.mcqSelected !== (it.q as MCQ).correct
+      )
+      .map((it) => it.q.id);
 
     const wrongSingle = opts.lastItems
-      .filter(it => it.q.type === "written" && (it.q as WrittenSingle).mode === "single")
-      .filter(it => {
+      .filter(
+        (it) =>
+          it.q.type === "written" && (it.q as WrittenSingle).mode === "single"
+      )
+      .filter((it) => {
         const ws = it.q as WrittenSingle;
         const { score } = scoreWrittenSingle(ws, it.singleText ?? "");
         return score < ws.points - 1e-6;
       })
-      .map(it => it.q.id);
+      .map((it) => it.q.id);
 
     const wrongList = opts.lastItems
-      .filter(it => it.q.type === "written" && (it.q as WrittenList).mode === "list")
-      .filter(it => {
+      .filter(
+        (it) => it.q.type === "written" && (it.q as WrittenList).mode === "list"
+      )
+      .filter((it) => {
         const wl = it.q as WrittenList;
-        const { score } = scoreWrittenList(wl, it.listAnswers ?? [], it.listHidden ?? []);
+        const { score } = scoreWrittenList(
+          wl,
+          it.listAnswers ?? [],
+          it.listHidden ?? []
+        );
         return score < wl.points - 1e-6;
       })
-      .map(it => it.q.id);
+      .map((it) => it.q.id);
 
     const wrWrong = Array.from(new Set([...wrongSingle, ...wrongList]));
 
     mcqIds = shuffleRng(wrongMCQ, rng).slice(0, TEST_CONFIG.MCQ_PER_TEST);
     if (mcqIds.length < TEST_CONFIG.MCQ_PER_TEST) {
-      const mcqBag = refillIfNeeded(mcqBag0, TEST_CONFIG.MCQ_PER_TEST - mcqIds.length, mcqIdsAll);
-      const { taken } = takeFromBag(mcqBag, TEST_CONFIG.MCQ_PER_TEST - mcqIds.length);
+      const mcqBag = refillIfNeeded(
+        mcqBag0,
+        TEST_CONFIG.MCQ_PER_TEST - mcqIds.length,
+        mcqIdsAll
+      );
+      const { taken } = takeFromBag(
+        mcqBag,
+        TEST_CONFIG.MCQ_PER_TEST - mcqIds.length
+      );
       mcqIds = mcqIds.concat(taken);
     }
 
     wrIds = shuffleRng(wrWrong, rng).slice(0, TEST_CONFIG.WRITTEN_PER_TEST);
     if (wrIds.length < TEST_CONFIG.WRITTEN_PER_TEST) {
-      const wrBag = refillIfNeeded(wrBag0, TEST_CONFIG.WRITTEN_PER_TEST - wrIds.length, wrIdsAll);
-      const { taken } = takeFromBag(wrBag, TEST_CONFIG.WRITTEN_PER_TEST - wrIds.length);
+      const wrBag = refillIfNeeded(
+        wrBag0,
+        TEST_CONFIG.WRITTEN_PER_TEST - wrIds.length,
+        wrIdsAll
+      );
+      const { taken } = takeFromBag(
+        wrBag,
+        TEST_CONFIG.WRITTEN_PER_TEST - wrIds.length
+      );
       wrIds = wrIds.concat(taken);
     }
   } else {
     const mcqBag = refillIfNeeded(mcqBag0, TEST_CONFIG.MCQ_PER_TEST, mcqIdsAll);
-    const wrBag = refillIfNeeded(wrBag0, TEST_CONFIG.WRITTEN_PER_TEST, wrIdsAll);
+    const wrBag = refillIfNeeded(
+      wrBag0,
+      TEST_CONFIG.WRITTEN_PER_TEST,
+      wrIdsAll
+    );
     const takenMcq = takeFromBag(mcqBag, TEST_CONFIG.MCQ_PER_TEST);
     const takenWr = takeFromBag(wrBag, TEST_CONFIG.WRITTEN_PER_TEST);
     mcqIds = takenMcq.taken;
@@ -92,40 +180,55 @@ function startTest(opts: StartOptions): TestItem[] {
     saveBag("quiz.bag.written", takenWr.rest);
   }
 
-  const findById = (id: number) => bank.find(q => q.id === id)!;
+  const findById = (id: number) => bank.find((q) => q.id === id)!;
 
-  const mcqItems: TestItem[] = mcqIds.map(id => {
+  const mcqItems: TestItem[] = mcqIds.map((id) => {
     const qq = findById(id) as MCQ;
     const slot = 1 + Math.floor(rng() * Math.max(1, qq.options.length));
-    const prepared = (qq.shuffleOptions === false)
-      ? qq.options.slice()
-      : prepareMCQOptions(qq, rng, slot);
+    const prepared =
+      qq.shuffleOptions === false
+        ? qq.options.slice()
+        : prepareMCQOptions(qq, rng, slot);
     return { q: qq, mcqDesiredSlot: slot, mcqOptionsPrepared: prepared };
   });
 
-  const wrItems: TestItem[] = wrIds.map(id => {
+  const wrItems: TestItem[] = wrIds.map((id) => {
     const q = findById(id) as WrittenSingle | WrittenList;
     if ((q as WrittenList).mode === "list") {
       const wl = q as WrittenList;
-      const { shown, hidden } = partitionList(wl, rng); // ⟵ ახლა ყოველთვის 1 ნაჩვენები
-      return { q, listShown: shown, listHidden: hidden, listAnswers: new Array(hidden.length).fill("") };
+
+      // base partition (keeps min-1 when 0.25 is used internally)
+      // but we will override with revealMode directly for clarity
+      // const { shown, hidden } = partitionList(wl, rng);
+
+      const { shown, hidden } = applyRevealMode(wl, rng, revealMode);
+
+      return {
+        q,
+        listShown: shown,
+        listHidden: hidden,
+        listAnswers: new Array(hidden.length).fill(""),
+      };
     }
     return { q, singleText: "" };
   });
 
   const items = [...mcqItems, ...wrItems];
 
-  // coverage
+  // --- Coverage bookkeeping (store served question IDs) ---
   try {
-    const servedIds = items.map(it => it.q.id);
+    const servedIds = items.map((it) => it.q.id);
     addCoverage(servedIds);
-  } catch { /* noop */ }
+  } catch {
+    /* noop */
+  }
 
   return shuffleRng(items, rng);
 }
 
 const TWO_HOURS = 2 * 60 * 60;
 
+// helper: seconds => HH:MM:SS
 function formatDuration(totalSec: number): string {
   const s = Math.max(0, Math.floor(totalSec));
   const hrs = Math.floor(s / 3600);
@@ -135,17 +238,21 @@ function formatDuration(totalSec: number): string {
   return `${pad(hrs)}:${pad(mins)}:${pad(secs)}`;
 }
 
+// similarity thresholds
 function statusFromRatio(r: number) {
   if (r >= 0.85) return { label: "სწორია", kind: "correct" as const };
-  if (r >= 0.60) return { label: "ნახევრად სწორი", kind: "partial" as const };
+  if (r >= 0.6) return { label: "ნახევრად სწორი", kind: "partial" as const };
   return { label: "არასწორია", kind: "wrong" as const };
 }
 
+// seed utils
 function genSeed() {
-  return `seed-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `seed-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
 }
 
-// Coverage storage
+// --- Coverage storage (localStorage) ---
 const COV_KEY = "quiz.coverage.v1";
 function readCoverage(): Set<number> {
   try {
@@ -153,18 +260,42 @@ function readCoverage(): Set<number> {
     if (!raw) return new Set();
     const arr = JSON.parse(raw) as number[];
     return new Set(arr);
-  } catch { return new Set(); }
+  } catch {
+    return new Set();
+  }
 }
 function writeCoverage(s: Set<number>) {
-  try { localStorage.setItem(COV_KEY, JSON.stringify(Array.from(s))); } catch {}
+  try {
+    localStorage.setItem(COV_KEY, JSON.stringify(Array.from(s)));
+  } catch {}
 }
 function addCoverage(ids: number[]) {
   const s = readCoverage();
-  ids.forEach(id => s.add(id));
+  ids.forEach((id) => s.add(id));
   writeCoverage(s);
 }
 function clearCoverage() {
-  try { localStorage.removeItem(COV_KEY); } catch {}
+  try {
+    localStorage.removeItem(COV_KEY);
+  } catch {}
+}
+
+// --- Reveal mode storage (localStorage) ---
+const REVEAL_KEY = "quiz.revealMode.v1";
+function readRevealMode(): number {
+  try {
+    const raw = localStorage.getItem(REVEAL_KEY);
+    if (!raw) return 0.25;
+    const v = parseFloat(raw);
+    return [0, 1, 0.25].includes(v) ? v : 0.25;
+  } catch {
+    return 0.25;
+  }
+}
+function writeRevealMode(v: number) {
+  try {
+    localStorage.setItem(REVEAL_KEY, String(v));
+  } catch {}
 }
 
 export default function App() {
@@ -172,20 +303,26 @@ export default function App() {
   const [items, setItems] = useState<TestItem[] | null>(null);
   const [finished, setFinished] = useState(false);
 
+  // seed state: empty string == OFF
   const [seed, setSeed] = useState<string>("");
   const seedEnabled = !!seed;
+
+  // revealMode: 0, 1, 0.25
+  const [revealMode, setRevealMode] = useState<number>(() => readRevealMode());
 
   const [remainingSec, setRemainingSec] = useState<number>(TWO_HOURS);
   const [ticking, setTicking] = useState<boolean>(false);
   const [timeUp, setTimeUp] = useState<boolean>(false);
 
+  // Coverage computed state (for header display)
   const coverageSet = useMemo(() => readCoverage(), [items, finished]);
   const coverageCount = coverageSet.size;
 
+  // timer
   useEffect(() => {
     if (!ticking) return;
     const id = setInterval(() => {
-      setRemainingSec(prev => {
+      setRemainingSec((prev) => {
         if (prev <= 1) {
           clearInterval(id);
           setFinished(true);
@@ -203,27 +340,50 @@ export default function App() {
     if (finished) setTicking(false);
   }, [finished]);
 
+  // persist revealMode
+  useEffect(() => {
+    writeRevealMode(revealMode);
+  }, [revealMode]);
+
   const progress = useMemo(() => {
     if (!items) return { answered: 0, total: 0 };
     let answered = 0;
     for (const it of items) {
       if (it.q.type === "mcq" && it.mcqSelected) answered++;
-      else if (it.q.type === "written" && (it.q as WrittenSingle).mode === "single" && (it.singleText ?? "").trim()) answered++;
-      else if (it.q.type === "written" && (it.q as WrittenList).mode === "list" && (it.listAnswers ?? []).some(v => (v ?? "").trim())) answered++;
+      else if (
+        it.q.type === "written" &&
+        (it.q as WrittenSingle).mode === "single" &&
+        (it.singleText ?? "").trim()
+      )
+        answered++;
+      else if (
+        it.q.type === "written" &&
+        (it.q as WrittenList).mode === "list" &&
+        (it.listAnswers ?? []).some((v) => (v ?? "").trim())
+      )
+        answered++;
     }
     return { answered, total: items.length };
   }, [items]);
 
+  // summary stats
   const stats = useMemo(() => {
     if (!items || !finished) return null;
 
     let totalMax = 0;
     let totalEarned = 0;
 
-    let mcqMax = 0, mcqEarned = 0, mcqTotal = 0, mcqCorrect = 0, mcqWrong = 0;
-    let wrMax = 0, wrEarned = 0, wrTotal = 0, wrCorrect = 0, wrPartial = 0, wrWrong = 0;
-
-    const details: { id: number; got: number; max: number }[] = [];
+    let mcqMax = 0,
+      mcqEarned = 0,
+      mcqTotal = 0,
+      mcqCorrect = 0,
+      mcqWrong = 0;
+    let wrMax = 0,
+      wrEarned = 0,
+      wrTotal = 0,
+      wrCorrect = 0,
+      wrPartial = 0,
+      wrWrong = 0;
 
     for (const it of items) {
       const q = it.q;
@@ -233,15 +393,14 @@ export default function App() {
         mcqMax += q.points;
         const got = it.mcqSelected === q.correct ? q.points : 0;
         mcqEarned += got;
-        details.push({ id: q.id, got, max: q.points });
-        if (got === q.points) mcqCorrect++; else mcqWrong++;
+        if (got === q.points) mcqCorrect++;
+        else mcqWrong++;
       } else if ((q as WrittenSingle).mode === "single") {
         wrTotal++;
         const ws = q as WrittenSingle;
         wrMax += ws.points;
         const { score, ratio } = scoreWrittenSingle(ws, it.singleText ?? "");
         wrEarned += score;
-        details.push({ id: ws.id, got: score, max: ws.points });
 
         const st = statusFromRatio(ratio ?? 0);
         if (st.kind === "correct") wrCorrect++;
@@ -251,11 +410,16 @@ export default function App() {
         wrTotal++;
         const wl = q as WrittenList;
         wrMax += wl.points;
-        const scored = scoreWrittenList(wl, it.listAnswers ?? [], it.listHidden ?? []);
+        const scored = scoreWrittenList(
+          wl,
+          it.listAnswers ?? [],
+          it.listHidden ?? []
+        );
         wrEarned += scored.score;
-        details.push({ id: wl.id, got: scored.score, max: wl.points });
 
-        const avgRatio = scored.rows.length ? (scored.rows.reduce((a, r) => a + r.ratio, 0) / scored.rows.length) : 0;
+        const avgRatio = scored.rows.length
+          ? scored.rows.reduce((a, r) => a + r.ratio, 0) / scored.rows.length
+          : 0;
         const st = statusFromRatio(avgRatio);
         if (st.kind === "correct") wrCorrect++;
         else if (st.kind === "partial") wrPartial++;
@@ -266,21 +430,36 @@ export default function App() {
     totalMax = mcqMax + wrMax;
     totalEarned = Math.round((mcqEarned + wrEarned) * 100) / 100;
 
+    // round for display
     mcqEarned = Math.round(mcqEarned * 100) / 100;
     wrEarned = Math.round(wrEarned * 100) / 100;
 
     return {
       overall: { max: totalMax, earned: totalEarned },
-      mcq: { max: mcqMax, earned: mcqEarned, total: mcqTotal, correct: mcqCorrect, wrong: mcqWrong },
-      written: { max: wrMax, earned: wrEarned, total: wrTotal, correct: wrCorrect, partial: wrPartial, wrong: wrWrong },
-      details,
+      mcq: {
+        max: mcqMax,
+        earned: mcqEarned,
+        total: mcqTotal,
+        correct: mcqCorrect,
+        wrong: mcqWrong,
+      },
+      written: {
+        max: wrMax,
+        earned: wrEarned,
+        total: wrTotal,
+        correct: wrCorrect,
+        partial: wrPartial,
+        wrong: wrWrong,
+      },
     };
   }, [items, finished]);
 
   if (!bank) {
     return (
       <div className="p-6 max-w-5xl mx-auto">
-        <div className="text-2xl font-semibold mb-2">ტესტის აპი (იტვირთება…)</div>
+        <div className="text-2xl font-semibold mb-2">
+          ტესტის აპი (იტვირთება…)
+        </div>
         {error && <div className="text-sm text-red-600">{error}</div>}
       </div>
     );
@@ -288,17 +467,25 @@ export default function App() {
 
   const rng = makeRNG(seedEnabled ? seed : null);
 
-  const canPracticeWrong = !!(items && finished && items.some(it => {
-    if (it.q.type === "mcq") return it.mcqSelected !== (it.q as MCQ).correct;
-    if ((it.q as WrittenSingle).mode === "single") {
-      const ws = it.q as WrittenSingle;
-      const { score } = scoreWrittenSingle(ws, it.singleText ?? "");
-      return score < ws.points - 1e-6;
-    }
-    const wl = it.q as WrittenList;
-    const { score } = scoreWrittenList(wl, it.listAnswers ?? [], it.listHidden ?? []);
-    return score < wl.points - 1e-6;
-  }));
+  const canPracticeWrong = !!(
+    items &&
+    finished &&
+    items.some((it) => {
+      if (it.q.type === "mcq") return it.mcqSelected !== (it.q as MCQ).correct;
+      if ((it.q as WrittenSingle).mode === "single") {
+        const ws = it.q as WrittenSingle;
+        const { score } = scoreWrittenSingle(ws, it.singleText ?? "");
+        return score < ws.points - 1e-6;
+      }
+      const wl = it.q as WrittenList;
+      const { score } = scoreWrittenList(
+        wl,
+        it.listAnswers ?? [],
+        it.listHidden ?? []
+      );
+      return score < wl.points - 1e-6;
+    })
+  );
 
   const inputsDisabled = finished || remainingSec <= 0;
   const elapsedSec = TWO_HOURS - remainingSec;
@@ -306,20 +493,29 @@ export default function App() {
   return (
     <div className="p-0">
       {/* Sticky Header */}
-      <div className="sticky top-0 z-50 backdrop-blur bg-white/80 border-b">
+      <div className="sticky top-0 z-50 backdrop-blურ bg-white/80 border-b">
         {/* Top ribbon */}
         <div className="bg-gradient-to-r from-blue-700 via-blue-600 to-indigo-600 text-white">
           <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center font-bold">QZ</div>
+              <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center font-bold">
+                QZ
+              </div>
               <div>
-                <div className="text-lg font-semibold leading-tight">სავარჯიშო ქვიზი</div>
-                <div className="text-xs text-blue-100">25 ტესტური + 10 საწერი = 100 ქულა</div>
+                <div className="text-lg font-semibold leading-tight">
+                  სავარჯიშო ქვიზი
+                </div>
+                <div className="text-xs text-blue-100">
+                  25 ტესტური + 10 საწერი = 100 ქულა
+                </div>
               </div>
             </div>
             <div className="hidden xl:flex items-center gap-3 text-sm text-blue-100">
               <span className="opacity-90">კითხვა-ბანკი: {bank.length}</span>
-              <span className="px-2 py-0.5 rounded bg-white/15">Coverage: {coverageCount} / {bank.length}</span>
+              {/* Coverage in header */}
+              <span className="px-2 py-0.5 rounded bg-white/15">
+                Coverage: {coverageCount} / {bank.length}
+              </span>
             </div>
           </div>
         </div>
@@ -330,28 +526,90 @@ export default function App() {
           {items && !finished ? (
             <CountdownTimer remainingSec={remainingSec} totalSec={TWO_HOURS} />
           ) : (
-            <div className="px-3 py-1 rounded-xl text-sm border bg-neutral-50 text-neutral-700">დრო: 02:00:00</div>
+            <div className="px-3 py-1 rounded-xl text-sm border bg-neutral-50 text-neutral-700">
+              დრო: 02:00:00
+            </div>
           )}
+
+          {/* Reveal mode selector */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-neutral-600">ნაჩვენები ჩამონათვალი:</span>
+            <button
+              className={`px-2.5 py-1.5 rounded-lg border text-sm ${
+                revealMode === 0.25
+                  ? "bg-blue-600 text-white border-blue-700"
+                  : "hover:bg-neutral-50"
+              }`}
+              onClick={() => {
+                if (items && !finished) return;
+                setRevealMode(0.25);
+              }}
+              disabled={!!items && !finished}
+              title="შემთხვევითი მეოთხედი (მინ. 1)"
+            >
+              25%
+            </button>
+            <button
+              className={`px-2.5 py-1.5 rounded-lg border text-sm ${
+                revealMode === 1
+                  ? "bg-blue-600 text-white border-blue-700"
+                  : "hover:bg-neutral-50"
+              }`}
+              onClick={() => {
+                if (items && !finished) return;
+                setRevealMode(1);
+              }}
+              disabled={!!items && !finished}
+              title="მხოლოდ ერთი ელემენტი"
+            >
+              1
+            </button>
+            <button
+              className={`px-2.5 py-1.5 rounded-lg border text-sm ${
+                revealMode === 0
+                  ? "bg-blue-600 text-white border-blue-700"
+                  : "hover:bg-neutral-50"
+              }`}
+              onClick={() => {
+                if (items && !finished) return;
+                setRevealMode(0);
+              }}
+              disabled={!!items && !finished}
+              title="არაფერი არ გამოჩნდეს"
+            >
+              0
+            </button>
+          </div>
 
           {/* Seed toggle + actions */}
           <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
             <div className="flex items-center gap-2">
               <button
                 className={`px-3 py-2 rounded-xl border cursor-pointer transition
-                ${seedEnabled ? "bg-indigo-600 text-white border-indigo-700 hover:bg-indigo-700" : "hover:bg-neutral-50"}`}
+                ${
+                  seedEnabled
+                    ? "bg-indigo-600 text-white border-indigo-700 hover:bg-indigo-700"
+                    : "hover:bg-neutral-50"
+                }`}
                 onClick={() => {
                   if (items && !finished) return;
-                  setSeed(prev => (prev ? "" : genSeed()));
+                  setSeed((prev) => (prev ? "" : genSeed()));
                 }}
                 disabled={!!items && !finished}
-                title={seedEnabled ? "Seed გათიშვა" : "Seed ჩართვა (დეტერმინისტული ვერსია)"}
+                title={
+                  seedEnabled
+                    ? "Seed გათიშვა"
+                    : "Seed ჩართვა (დეტერმინისტული ვერსია)"
+                }
               >
                 Seed: {seedEnabled ? "ON" : "OFF"}
               </button>
 
               {seedEnabled && (
                 <>
-                  <span className="text-xs text-neutral-500 select-all">{seed}</span>
+                  <span className="text-xs text-neutral-500 select-all">
+                    {seed}
+                  </span>
                   <button
                     className="px-3 py-2 rounded-xl border hover:bg-neutral-50 cursor-pointer"
                     onClick={() => {
@@ -371,7 +629,7 @@ export default function App() {
               <button
                 className="px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 cursor-pointer shadow-sm"
                 onClick={() => {
-                  setItems(startTest({ mode: "normal", bank, rng }));
+                  setItems(startTest({ mode: "normal", bank, rng, revealMode }));
                   setFinished(false);
                   setRemainingSec(TWO_HOURS);
                   setTimeUp(false);
@@ -389,7 +647,9 @@ export default function App() {
                 className="relative px-4 py-2 rounded-xl border hover:bg-red-50 cursor-pointer group"
                 onClick={() => {
                   if (items && !finished) return;
-                  const ok = window.confirm("დარწმუნებული ხარ? როტაციის ისტორია და დაფიქსირებული coverage გასუფთავდება.");
+                  const ok = window.confirm(
+                    "დარწმუნებული ხარ? როტაციის ისტორია და დაფიქსირებული coverage გასუფთავდება."
+                  );
                   if (!ok) return;
                   localStorage.removeItem("quiz.bag.mcq");
                   localStorage.removeItem("quiz.bag.written");
@@ -411,7 +671,8 @@ export default function App() {
         {timeUp && (
           <div className="bg-red-600">
             <div className="max-w-6xl mx-auto px-6 py-2 text-white text-sm font-medium">
-              დრო ამოიწურა — ტესტის გაგრძელება შეუძლებელია. შეგიძლიათ მხოლოდ შედეგების ნახვა/რევიუ.
+              დრო ამოიწურა — ტესტის გაგრძელება შეუძლებელია. შეგიძლიათ მხოლოდ
+              შედეგების ნახვა/რევიუ.
             </div>
           </div>
         )}
@@ -423,7 +684,9 @@ export default function App() {
           <div className="space-y-6">
             <div className="flex items-center gap-3">
               <ProgressBar value={progress.answered} max={items.length} />
-              <div className="text-sm w-24 text-right">{progress.answered}/{items.length}</div>
+              <div className="text-sm w-24 text-right">
+                {progress.answered}/{items.length}
+              </div>
             </div>
 
             <ol className="space-y-6">
@@ -497,20 +760,34 @@ export default function App() {
             </ol>
 
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <div className="text-sm text-neutral-600">შენიშვნა: საწერი პასუხები ფასდება „მომსგავსებლობით“ — ზუსტად არ დაემთხვეს, მაგრამ აზრობრივად ახლოა → ჩაითვლება ნაწილობრივ/სრულად.</div>
+              <div className="text-sm text-neutral-600">
+                შენიშვნა: საწერი პასუხები ფასდება „მომსგავსებლობით“ — ზუსტად არ
+                დაემთხვეს, მაგრამ აზრობრივად ახლოა → ჩაითვლება
+                ნაწილობრივ/სრულად.
+              </div>
               <div className="flex gap-2">
                 <button
                   className="px-4 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 cursor-pointer"
                   onClick={() => setFinished(true)}
                   disabled={finished}
-                >დასრულება</button>
+                >
+                  დასრულება
+                </button>
 
                 {finished && canPracticeWrong && (
                   <button
                     className="px-4 py-2 rounded-xl bg-amber-600 text-white hover:bg-amber-700 cursor-pointer"
                     onClick={() => {
                       if (!items) return;
-                      setItems(startTest({ mode: "practiceWrong", bank, lastItems: items, rng }));
+                      setItems(
+                        startTest({
+                          mode: "practiceWrong",
+                          bank,
+                          lastItems: items,
+                          rng,
+                          revealMode,
+                        })
+                      );
                       setFinished(false);
                       setRemainingSec(TWO_HOURS);
                       setTimeUp(false);
@@ -531,45 +808,163 @@ export default function App() {
                 {/* Overall summary line */}
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="text-xl font-semibold">
-                    ქულა: <span className="text-neutral-500">{stats.overall.max}</span> / <span className="text-green-700">{stats.overall.earned}</span>
+                    ქულა:{" "}
+                    <span className="text-neutral-500">
+                      {stats.overall.max}
+                    </span>{" "}
+                    /{" "}
+                    <span className="text-green-700">
+                      {stats.overall.earned}
+                    </span>
                   </div>
                   <Pill>გავლილი დრო: {formatDuration(elapsedSec)}</Pill>
-                  <Pill>Coverage: {coverageCount} / {bank.length}</Pill>
+                  {/* Coverage quick glance */}
+                  <Pill>
+                    Coverage: {coverageCount} / {bank.length}
+                  </Pill>
                 </div>
 
-                {/* Coverage details (collapsed) — IDs-ის ნაცვლად COUNTS */}
+                {/* Two cards side-by-side */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* MCQ Card */}
+                  <div className="rounded-2xl border shadow-sm overflow-hidden">
+                    <div className="px-4 py-3 bg-blue-600 text-white font-semibold">
+                      MCQ
+                    </div>
+                    <div className="p-4 space-y-2">
+                      <div className="text-lg">
+                        MCQ:{" "}
+                        <span className="text-neutral-500">
+                          {stats.mcq.max}
+                        </span>{" "}
+                        /{" "}
+                        <span className="text-blue-700 font-semibold">
+                          {stats.mcq.earned}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 text-sm">
+                        <div className="rounded-lg bg-green-50 border border-green-200 p-2 text-center">
+                          <div className="text-xs text-green-700">სწორი</div>
+                          <div className="text-lg font-semibold text-green-800">
+                            {stats.mcq.correct}
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-red-50 border border-red-200 p-2 text-center">
+                          <div className="text-xs text-red-700">არასწორი</div>
+                          <div className="text-lg font-semibold text-red-800">
+                            {stats.mcq.wrong}
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-neutral-50 border p-2 text-center">
+                          <div className="text-xs text-neutral-600">სულ</div>
+                          <div className="text-lg font-semibold text-neutral-800">
+                            {stats.mcq.total}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Written Card */}
+                  <div className="rounded-2xl border shadow-sm overflow-hidden">
+                    <div className="px-4 py-3 bg-emerald-600 text-white font-semibold">
+                      Written
+                    </div>
+                    <div className="p-4 space-y-2">
+                      <div className="text-lg">
+                        Written:{" "}
+                        <span className="text-neutral-500">
+                          {stats.written.max}
+                        </span>{" "}
+                        /{" "}
+                        <span className="text-emerald-700 font-semibold">
+                          {stats.written.earned}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2 text-sm">
+                        <div className="rounded-lg bg-green-50 border border-green-200 p-2 text-center">
+                          <div className="text-xs text-green-700">სწორი</div>
+                          <div className="text-lg font-semibold text-green-800">
+                            {stats.written.correct}
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-amber-50 border border-amber-200 p-2 text-center">
+                          <div className="text-xs text-amber-700">
+                            ნახევრად სწორი
+                          </div>
+                          <div className="text-lg font-semibold text-amber-800">
+                            {stats.written.partial}
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-red-50 border border-red-200 p-2 text-center">
+                          <div className="text-xs text-red-700">არასწორი</div>
+                          <div className="text-lg font-semibold text-red-800">
+                            {stats.written.wrong}
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-neutral-50 border p-2 text-center">
+                          <div className="text-xs text-neutral-600">სულ</div>
+                          <div className="text-lg font-semibold text-neutral-800">
+                            {stats.written.total}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Coverage details (collapsed) */}
                 <div className="border rounded-2xl p-4 space-y-3 shadow-sm">
                   <details>
-                    <summary className="cursor-pointer text-sm text-neutral-700">Coverage details (არ გამოსულა)</summary>
-                    <div className="mt-2 text-sm space-y-2">
+                    <summary className="cursor-pointer text-sm text-neutral-700">
+                      Coverage details (რომელი არ გამოჩენილა ჯერ)
+                    </summary>
+                    <div className="mt-2 text-sm">
                       {(() => {
-                        const allIds = new Set<number>(bank.map(q => q.id));
-                        const missingIds = Array.from(allIds).filter(id => !coverageSet.has(id));
-
-                        let missingMCQ = 0;
-                        let missingWritten = 0;
-                        for (const id of missingIds) {
-                          const q = bank.find(x => x.id === id);
-                          if (!q) continue;
-                          if (q.type === "mcq") missingMCQ++;
-                          else missingWritten++;
-                        }
-
-                        const totalMissing = missingIds.length;
-
-                        return (
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                            <div className="rounded-lg border p-3 bg-blue-50">
-                              <div className="text-xs text-blue-700">ტესტური (MCQ)</div>
-                              <div className="text-xl font-semibold text-blue-800">{missingMCQ}</div>
+                        const allIds = new Set<number>(bank.map((q) => q.id));
+                        const missingIds = Array.from(allIds).filter(
+                          (id) => !coverageSet.has(id)
+                        );
+                        if (missingIds.length === 0) {
+                          return (
+                            <div className="text-green-700">
+                              ყოველი კითხვა გამოყენებულია ✔
                             </div>
-                            <div className="rounded-lg border p-3 bg-emerald-50">
-                              <div className="text-xs text-emerald-700">საწერი</div>
-                              <div className="text-xl font-semibold text-emerald-800">{missingWritten}</div>
+                          );
+                        }
+                        // Count by type
+                        const missingMCQ = missingIds.filter(
+                          (id) => bank.find((q) => q.id === id)?.type === "mcq"
+                        ).length;
+                        const missingWR = missingIds.filter(
+                          (id) =>
+                            bank.find((q) => q.id === id)?.type === "written"
+                        ).length;
+                        return (
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div className="rounded-lg border p-3 bg-neutral-50">
+                              <div className="text-xs text-neutral-600">
+                                არ ნანახი MCQ
+                              </div>
+                              <div className="text-xl font-semibold text-blue-700">
+                                {missingMCQ}
+                              </div>
                             </div>
                             <div className="rounded-lg border p-3 bg-neutral-50">
-                              <div className="text-xs text-neutral-700">სულ</div>
-                              <div className="text-xl font-semibold text-neutral-800">{totalMissing}</div>
+                              <div className="text-xs text-neutral-600">
+                                არ ნანახი Written
+                              </div>
+                              <div className="text-xl font-semibold text-emerald-700">
+                                {missingWR}
+                              </div>
+                            </div>
+                            <div className="rounded-lg border p-3 bg-neutral-50">
+                              <div className="text-xs text-neutral-600">
+                                სულ არ ნანახი
+                              </div>
+                              <div className="text-xl font-semibold text-neutral-800">
+                                {missingIds.length}
+                              </div>
                             </div>
                           </div>
                         );
@@ -581,24 +976,32 @@ export default function App() {
                 {/* Review block */}
                 <div className="border rounded-2xl p-4 shadow-sm">
                   <details open>
-                    <summary className="cursor-pointer text-sm text-neutral-700">რევიუ: ჩემი პასუხები vs სწორი</summary>
+                    <summary className="cursor-pointer text-sm text-neutral-700">
+                      რევიუ: ჩემი პასუხები vs სწორი
+                    </summary>
                     <ol className="mt-3 space-y-4">
                       {items!.map((it) => {
                         const q = it.q;
-                        let headerStatus: { label: string, kind: "correct" | "partial" | "wrong" } = { label: "არასწორია", kind: "wrong" };
+                        let headerStatus: {
+                          label: string;
+                          kind: "correct" | "partial" | "wrong";
+                        } = { label: "არასწორი", kind: "wrong" };
                         let reviewBlock: React.ReactNode = null;
 
-                        if (q.type === 'mcq') {
+                        if (q.type === "mcq") {
                           const mcq = q as MCQ;
                           const isCorrect = it.mcqSelected === mcq.correct;
-                          headerStatus = { label: isCorrect ? "სწორია" : "არასწორია", kind: isCorrect ? "correct" : "wrong" };
+                          headerStatus = {
+                            label: isCorrect ? "სწორი" : "არასწორი",
+                            kind: isCorrect ? "correct" : "wrong",
+                          };
                           reviewBlock = (
                             <div className="space-y-2">
                               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                                {mcq.options.map(o => {
+                                {mcq.options.map((o) => {
                                   const isSel = it.mcqSelected === o.id;
                                   const isCor = mcq.correct === o.id;
-                                  const base = 'border rounded-lg p-2 relative';
+                                  const base = "border rounded-lg p-2 relative";
                                   const cls = isCor
                                     ? `${base} border-green-600 ring-1 ring-green-400`
                                     : isSel
@@ -607,33 +1010,78 @@ export default function App() {
                                   return (
                                     <div key={o.id} className={cls}>
                                       {o.image ? (
-                                        <img src={o.image} alt={o.alt ?? 'opt'} className="h-24 w-full object-contain" />
+                                        <img
+                                          src={o.image}
+                                          alt={o.alt ?? "opt"}
+                                          className="h-24 w-full object-contain"
+                                        />
                                       ) : (
-                                        <div className="text-center font-medium">{o.text}</div>
+                                        <div className="text-center font-medium">
+                                          {o.text}
+                                        </div>
                                       )}
-                                      {isCor && <span className="absolute top-1 left-1 text-xs bg-green-600 text-white px-1 rounded">სწორი</span>}
-                                      {isSel && !isCor && <span className="absolute top-1 left-1 text-xs bg-red-600 text-white px-1 rounded">ჩემი არჩევანი</span>}
-                                      {isSel && isCor && <span className="absolute top-1 left-1 text-xs bg-green-600 text-white px-1 rounded">ჩემი არჩევანი ✓</span>}
+                                      {isCor && (
+                                        <span className="absolute top-1 left-1 text-xs bg-green-600 text-white px-1 rounded">
+                                          სწორი
+                                        </span>
+                                      )}
+                                      {isSel && !isCor && (
+                                        <span className="absolute top-1 left-1 text-xs bg-red-600 text-white px-1 rounded">
+                                          ჩემი არჩევანი
+                                        </span>
+                                      )}
+                                      {isSel && isCor && (
+                                        <span className="absolute top-1 left-1 text-xs bg-green-600 text-white px-1 rounded">
+                                          ჩემი არჩევანი ✓
+                                        </span>
+                                      )}
                                     </div>
                                   );
                                 })}
                               </div>
                             </div>
                           );
-                        } else if ((q as WrittenSingle).mode === 'single') {
+                        } else if ((q as WrittenSingle).mode === "single") {
                           const ws = q as WrittenSingle;
-                          const { score, ratio } = scoreWrittenSingle(ws, it.singleText ?? '');
+                          const { score, ratio } = scoreWrittenSingle(
+                            ws,
+                            it.singleText ?? ""
+                          );
                           const st = statusFromRatio(ratio ?? 0);
                           headerStatus = st;
 
                           reviewBlock = (
                             <div className="space-y-2 text-sm">
                               <div className="flex gap-2 flex-wrap">
-                                <Pill>მსგავსება ~ {Math.round((ratio ?? 0) * 100)}%</Pill>
-                                <Pill>ქულა: {score} / {ws.points}</Pill>
+                                <Pill>
+                                  მსგავსება ~ {Math.round((ratio ?? 0) * 100)}%
+                                </Pill>
+                                <Pill>
+                                  ქულა: {score} / {ws.points}
+                                </Pill>
                               </div>
-                              <div><span className="font-medium">თქვენი პასუხი:</span> <span className={`px-2 py-0.5 rounded ${st.kind === 'correct' ? 'bg-green-50' : st.kind === 'partial' ? 'bg-yellow-50' : 'bg-red-50'}`}>{(it.singleText ?? '').trim() || '—'}</span></div>
-                              <div><span className="font-medium">სწორი ვარიანტები:</span> {ws.answer_variants.join(', ')}</div>
+                              <div>
+                                <span className="font-medium">
+                                  თქვენი პასუხი:
+                                </span>{" "}
+                                <span
+                                  className={`px-2 py-0.5 rounded ${
+                                    st.kind === "correct"
+                                      ? "bg-green-50"
+                                      : st.kind === "partial"
+                                      ? "bg-yellow-50"
+                                      : "bg-red-50"
+                                  }`}
+                                >
+                                  {(it.singleText ?? "").trim() || "—"}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="font-medium">
+                                  სწორი ვარიანტები:
+                                </span>{" "}
+                                {ws.answer_variants.join(", ")}
+                              </div>
                             </div>
                           );
                         } else {
@@ -641,33 +1089,62 @@ export default function App() {
                           const hidden = it.listHidden ?? [];
                           const answers = it.listAnswers ?? [];
                           const scored = scoreWrittenList(wl, answers, hidden);
-                          const avgRatio = scored.rows.length ? (scored.rows.reduce((a, r) => a + r.ratio, 0) / scored.rows.length) : 0;
+                          const avgRatio = scored.rows.length
+                            ? scored.rows.reduce((a, r) => a + r.ratio, 0) /
+                              scored.rows.length
+                            : 0;
                           const st = statusFromRatio(avgRatio);
                           headerStatus = st;
 
                           reviewBlock = (
                             <div className="space-y-2 text-sm">
                               <div className="flex gap-2 flex-wrap">
-                                <Pill>საშ. მსგავსება ~ {Math.round(avgRatio * 100)}%</Pill>
-                                <Pill>ქულა: {scored.score} / {wl.points}</Pill>
+                                <Pill>
+                                  საშ. მსგავსება ~ {Math.round(avgRatio * 100)}%
+                                </Pill>
+                                <Pill>
+                                  ქულა: {scored.score} / {wl.points}
+                                </Pill>
                               </div>
                               {it.listShown && it.listShown.length > 0 && (
-                                <div className="flex flex-wrap gap-2"><span className="font-medium">ნაჩვენები:</span> {it.listShown.map((s, i) => <Pill key={i}>{s.value}</Pill>)}</div>
+                                <div className="flex flex-wrap gap-2">
+                                  <span className="font-medium">
+                                    ნაჩვენები:
+                                  </span>{" "}
+                                  {it.listShown.map((s, i) => (
+                                    <Pill key={i}>{s.value}</Pill>
+                                  ))}
+                                </div>
                               )}
                               <div className="overflow-auto">
                                 <table className="w-full text-sm border">
                                   <thead>
                                     <tr className="bg-neutral-50">
                                       <th className="p-2 text-left">#</th>
-                                      <th className="p-2 text-left">თქვენი პასუხი</th>
-                                      <th className="p-2 text-left">სწორი პასუხი</th>
+                                      <th className="p-2 text-left">
+                                        თქვენი პასუხი
+                                      </th>
+                                      <th className="p-2 text-left">
+                                        სწორი პასუხი
+                                      </th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {scored.rows.map((row, i) => (
-                                      <tr key={i} className={row.okFull ? 'bg-green-50' : (row.ratio >= 0.6 ? 'bg-yellow-50' : 'bg-red-50')}>
+                                      <tr
+                                        key={i}
+                                        className={
+                                          row.okFull
+                                            ? "bg-green-50"
+                                            : row.ratio >= 0.6
+                                            ? "bg-yellow-50"
+                                            : "bg-red-50"
+                                        }
+                                      >
                                         <td className="p-2">{i + 1}</td>
-                                        <td className="p-2">{row.user || '—'}</td>
+                                        <td className="p-2">
+                                          {row.user || "—"}
+                                        </td>
                                         <td className="p-2">{row.expected}</td>
                                       </tr>
                                     ))}
@@ -681,7 +1158,9 @@ export default function App() {
                         return (
                           <li key={q.id} className="border rounded-xl p-3">
                             <div className="flex items-center justify-between mb-2">
-                              <div className="font-medium">#{q.id} · {q.text}</div>
+                              <div className="font-medium">
+                                #{q.id} · {q.text}
+                              </div>
                               <Pill>{headerStatus.label}</Pill>
                             </div>
                             {reviewBlock}

@@ -2,6 +2,7 @@ export const TEST_CONFIG = {
   MCQ_PER_TEST: 25,
   WRITTEN_PER_TEST: 10,
   TOTAL_POINTS: 100,
+  WRITTEN_REVEAL_MODE: 'one' as 'quarter' | 'one' | 'none',
 };
 
 export const STORAGE_KEYS = {
