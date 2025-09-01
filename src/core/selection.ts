@@ -1,55 +1,66 @@
-import { STORAGE_KEYS } from "./config";
-import type { RNG } from "./utils";
-import { shuffle, shuffleRng } from "./utils";
-import type { ListItem, Question, WrittenList } from "./types";
+import type { Question, WrittenList } from "./types";
+import type { RNG } from "./utils"; // ⬅ მხოლოდ type-ად გვჭირდება
 
-function loadBag(key: string): number[] | null {
+const BAG_KEY_MCQ = "quiz.bag.mcq";
+const BAG_KEY_WR = "quiz.bag.written";
+
+/** Read saved bags or build fresh from bank */
+export function buildBags(bank: Question[]) {
+  const mcqSaved = readBag(BAG_KEY_MCQ);
+  const wrSaved = readBag(BAG_KEY_WR);
+
+  const mcqAll = bank.filter(q => q.type === "mcq").map(q => q.id);
+  const wrAll = bank.filter(q => q.type === "written").map(q => q.id);
+
+  const mcq = mcqSaved.length ? mcqSaved : mcqAll.slice();
+  const written = wrSaved.length ? wrSaved : wrAll.slice();
+
+  return { mcq, written };
+}
+
+export function saveBag(key: string, arr: number[]) {
+  try { localStorage.setItem(key, JSON.stringify(arr)); } catch {}
+}
+
+function readBag(key: string): number[] {
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const ids = JSON.parse(raw);
-    if (Array.isArray(ids)) return ids as number[];
-  } catch {}
-  return null;
-}
-export function saveBag(key: string, ids: number[]) {
-  localStorage.setItem(key, JSON.stringify(ids));
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as number[];
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
 }
 
-export function buildBags(bank: Question[]): { mcq: number[]; written: number[] } {
-  const mcqIds = bank.filter(q => q.type === "mcq").map(q => q.id);
-  const wrIds = bank.filter(q => q.type === "written").map(q => q.id);
-  const mcqBag = loadBag(STORAGE_KEYS.BAG_MCQ) ?? shuffle(mcqIds);
-  const wrBag = loadBag(STORAGE_KEYS.BAG_WRITTEN) ?? shuffle(wrIds);
-  return { mcq: mcqBag, written: wrBag };
+/** If bag doesn't have enough items to serve `needed`, append a fresh round of all ids (deduped). */
+export function refillIfNeeded(bag: number[], needed: number, allIds: number[]) {
+  if (bag.length >= needed) return bag.slice();
+  // append a full new round (avoid duplicates)
+  const set = new Set(bag);
+  for (const id of allIds) {
+    if (!set.has(id)) bag.push(id);
+  }
+  return bag.slice();
 }
 
-export function refillIfNeeded(bag: number[], needed: number, sourceIds: number[]): number[] {
-  if (bag.length >= needed) return bag;
-  const remaining = needed - bag.length;
-  const refill = shuffle(sourceIds);
-  return bag.concat(refill).slice(0, bag.length + remaining);
-}
-
-export function takeFromBag(bag: number[], count: number): { taken: number[]; rest: number[] } {
+/** Take first `count` items from bag, return {taken, rest} and persist must be done by caller */
+export function takeFromBag(bag: number[], count: number) {
   const taken = bag.slice(0, count);
   const rest = bag.slice(count);
   return { taken, rest };
 }
 
-/** Seed-aware partition for list questions. */
-export function partitionList(q: WrittenList, rng: RNG): { shown: ListItem[]; hidden: ListItem[] } {
-  const full = q.list.full.slice();
-  const showCount = Math.max(1, Math.ceil(full.length * (q.list.show_ratio ?? 0.25)));
-  const shuffled = shuffleRng(full, rng);
-  const shown = shuffled.slice(0, showCount);
-  const hidden = shuffled.slice(showCount);
+/**
+ * For list-type written questions:
+ * Previously we showed 25% of the list.
+ * NOW: always show EXACTLY ONE item (random/seeded), and hide the rest.
+ */
+export function partitionList(wl: WrittenList, rng: RNG) {
+  const full = wl.list.full.slice();
+  if (full.length === 0) return { shown: [], hidden: [] };
 
-  if (q.list.order_sensitive) {
-    const orderMap = new Map(q.list.full.map((it, idx) => [it.value, idx] as const));
-    hidden.sort((a, b) => (orderMap.get(a.value)! - orderMap.get(b.value)!));
-  } else {
-    hidden.sort((a, b) => a.value.localeCompare(b.value));
-  }
+  // pick exactly one index to show (seeded)
+  const idx = Math.floor(rng() * full.length);
+  const shown = [full[idx]];
+  const hidden = full.filter((_, i) => i !== idx);
   return { shown, hidden };
 }
